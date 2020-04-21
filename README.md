@@ -1,6 +1,7 @@
 ## Time-Lapse Camera
 
 Time-Lapse Camera for Raspberry Pi
+
 TLCAM is part of the Wilson project (wwww.iambobot.com)
 
 ### DESCRIPTION
@@ -23,22 +24,26 @@ SW is not limited to one single camera although it has not been tested and would
 
 ### REQUISITES
 You need to create a directory to store the capture files. It is recommended you create a RAM disk for better performance.
+
 In case you need guidance about how to create the RAM disk check instructions at www.iambobot.com
+
 Change the #define IMAGE_STORAGE_PATH in the .h file to point to your storage.
 
 
 ### USAGE
 Call TLCAM with the capture time period in milliseconds
-e.g.: ìtlcam 100î captures 10 images per second. Limit is up to HW performance: camera and HW platform (Raspberry).
-Default working mode is QVGA (340 x 240) and MPEJ, when supported. Use parameter ëvgaí to change resolution to (640 x 480).
-Type ìtlcamî to see usage information. 
+
+e.g.: ‚Äútlcam 100‚Äù captures 10 images per second. Limit is up to HW performance: camera and HW platform (Raspberry).
+
+Default working mode is QVGA (340 x 240) and MPEJ, when supported. Use parameter ‚Äòvga‚Äô to change resolution to (640 x 480).
+Type ‚Äútlcam‚Äù to see usage information. 
 
 ### LIMITATIONS
 Resolutions currently supported are VGA (640 x 480) and QVGA (340 x 240).
+
 YUV option needs some debugging.
 
 ### REFERENCES
-V4L capture code is based on the SW published by Jay Rambhia (https://gist.github.com/jayrambhia/5866483)
-JPEG decompression is based on the example by 
-Kenneth Finnegan - A bare-bones example of how to use jpeglib to decompress a jpg in memory. (https://gist.github.com/PhirePhly/3080633)
+- V4L capture code is based on the SW published by Jay Rambhia (https://gist.github.com/jayrambhia/5866483)
+- JPEG decompression is based on the example by Kenneth Finnegan - A bare-bones example of how to use jpeglib to decompress a jpg in memory. (https://gist.github.com/PhirePhly/3080633)
 
