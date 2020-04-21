@@ -31,7 +31,12 @@ Change the #define IMAGE_STORAGE_PATH in the .h file to point to your storage.
 ### USAGE
 Call TLCAM with the capture time period in milliseconds
 
-e.g.: “tlcam 100” captures 10 images per second. Limit is up to HW performance: camera and HW platform (Raspberry).
+e.g.: “tlcam 100” captures 10 images per second. 
+
+```
+tlcam 100
+```
+Limit to capture rate is up to HW performance, both camera and HW platform (Raspberry).
 
 Default working mode is QVGA (340 x 240) and MPEJ, when supported. Use parameter ‘vga’ to change resolution to (640 x 480).
 
