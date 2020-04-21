@@ -1,8 +1,6 @@
 ## Time-Lapse Camera
 
-Time-Lapse Camera for Raspberry Pi
-
-TLCAM is part of the Wilson project (www.iambobot.com)
+Time-Lapse Camera (TLCAM) is part of the Wilson project (www.iambobot.com)
 
 ### DESCRIPTION
 
@@ -15,7 +13,7 @@ TLCAM does:
 
 This SW has been developed and tested in a Raspberry Pi Zero. Nothing prevents it from running on other Linux platforms. 
 
-TLCAM WEB app is the companion app to play the images captured by TLCAM as motion pictures. Apache WEB server needs to be installed on the Raspberry to host the application. Alternatively, images can be uploaded to an external server. This feature needs an extension not published yet.
+TLCAM WEB app (https://github.com/fernandorpardo/Time-Lapse-Camera-WEB-app) is the companion app to play the images captured by TLCAM as motion pictures. Apache WEB server needs to be installed on the Raspberry to host the application. Alternatively, images can be uploaded to an external server. This feature needs an extension not published yet.
 
 TLCAM allows multiple players to fetch the images and display the video simultaneously.
 
