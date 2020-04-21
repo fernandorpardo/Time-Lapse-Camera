@@ -6,11 +6,11 @@ TLCAM is part of the Wilson project (wwww.iambobot.com)
 
 ### DESCRIPTION
 
-TLCAM converts a Raspberry into a Time-Lapse Camera by plugging an USB camera or connecting other kind of V4L device.
+TLCAM converts a Raspberry Pi with an USB camera into a Time-Lapse Camera.
 
 TLCAM does:
 - capture images from a V4L device (USB camera), either directly as JPEG or as YUYV, and in the latter case, compress the capture to JPEG
-- store the JPEG images into files at /var/www/ramdisk (#define IMAGE_STORAGE_PATH), where ramdisk is the mounting point an adhoc created RAM disk.
+- store the JPEG images into files at /var/www/ramdisk (#define IMAGE_STORAGE_PATH), where ramdisk is the mounting point of an adhoc created RAM disk.
 - display the images as they are captured, when 'display' option is selected, by copying the capture memory buffer into the frame buffer. When the capture is JPEG it is first decompressed and then copied.
 
 This SW has been developed and tested in a Raspberry Pi Zero. Nothing prevents it from running on other Linux platforms. 
@@ -36,6 +36,7 @@ Call TLCAM with the capture time period in milliseconds
 e.g.: “tlcam 100” captures 10 images per second. Limit is up to HW performance: camera and HW platform (Raspberry).
 
 Default working mode is QVGA (340 x 240) and MPEJ, when supported. Use parameter ‘vga’ to change resolution to (640 x 480).
+
 Type “tlcam” to see usage information. 
 
 ### LIMITATIONS
