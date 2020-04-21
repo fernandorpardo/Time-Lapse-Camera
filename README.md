@@ -2,7 +2,7 @@
 
 Time-Lapse Camera for Raspberry Pi
 
-TLCAM is part of the Wilson project (wwww.iambobot.com)
+TLCAM is part of the Wilson project (www.iambobot.com)
 
 ### DESCRIPTION
 
