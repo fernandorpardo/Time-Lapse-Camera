@@ -1,8 +1,11 @@
 // 
-// 01.00.00 - 	First published - needs clean up
+// 01.00.00 - First published - needs clean up
+// 01.01.00 - Oct 2020
+//	- PI camera support
+//	- 'cloud' option for image upload to cloud server (HTTPpost)
 
 #define VERSION_MAIN  "01" 		// Cloud server version. Cloud Major version. N-1 is not compatible with N
-#define VERSION_MAJOR "00" 		// release
+#define VERSION_MAJOR "01" 		// release
 #define VERSION_MINOR "00" 		// changes
 
 #include <stdlib.h>

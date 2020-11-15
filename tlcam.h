@@ -2,19 +2,27 @@
 #define TLCAM_HEADER_FILLE_H
 #endif
 
-#define CAMERA_1			"/dev/video0"
+//#define CAMERA_1			"/dev/video0"
 #define FRAMEBUFFER_DEVICE	"/dev/fb0"
 #define IMAGE_STORAGE_PATH 	"/var/www/ramdisk/"
 #define DATA_FILE 			"data.txt"
 
-typedef struct resoltution
+// Upload server
+#define HOST_NAME "192.168.1.100"
+#define HOST_URL "/servers/server_tlcam.php"
+#define HOST_PORT 80
+#define IMAGE_SAVED_FILES "/var/www/ramdisk/"
+
+
+typedef struct 
 {
 	int width;
 	int height;
 } CaptureResolution;
 
-const CaptureResolution vga = (CaptureResolution) {640, 480};
-const CaptureResolution qvga = (CaptureResolution) {340, 240};
+const CaptureResolution svga_wh = (CaptureResolution) {800, 600};
+const CaptureResolution  vga_wh = (CaptureResolution) {640, 480};
+const CaptureResolution qvga_wh = (CaptureResolution) {340, 240};
 
 typedef unsigned char BYTE;
 typedef unsigned int WORD;

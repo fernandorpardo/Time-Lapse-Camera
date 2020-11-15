@@ -6,7 +6,7 @@
 *
 * DESCRIPTION
 * TLCAM does:
-*  - capture images from a V4L device (USB camera), either directly as JPEG or as YUYV, and in the latter case 
+*  - capture images from a V4L device (USB camera or Pi camera), either directly as JPEG or as YUYV, and in the latter case 
 *    compress to JPEG
 *  - store the JPEG images into files in /var/www/ramdisk (IMAGE_STORAGE_PATH), where ramdisk is 
 *    an adhoc created RAM storage
@@ -27,8 +27,11 @@
 * - YUYV display needs some debugging
 *
 * VERSION 
+* (See version.cpp)
 * 01.00.00 - release candidate	
-* See version.cpp
+* 01.01.00 - PI camera support 
+*			 cloud hosting (image upload)
+*            selectable /dev/video device (multiple cameras)
 *
 * REFERENCES
 *	This SW use code from 
@@ -57,23 +60,37 @@
 using namespace std;
 #include <linux/fb.h> // frame buffer
 #include <cmath>
+
+#include "HTTPpost.h"
 #include "glib.h"
 #include "tlcam.h"
 
 char *version(char *str, size_t max_sz);
 const char fulldatafilename[] =IMAGE_STORAGE_PATH DATA_FILE;	
 CaptureResolution *CapResolution;
-typedef struct
-{
-	bool vga= false;
-	bool verbose= true; 
-	bool agent= false;
-	bool yuyv= false;
-	bool display= false;
-	int time;
-} CLI_options;
 
-CLI_options CLIops;
+// Memory buffer to store the JPEG decompressed image
+// Keep a permanet buffer and resize as needed and 
+// avoid calling malloc and free for each image
+// called from: JPEG_decompress
+unsigned char *gmemptr;
+size_t gmemsize;
+unsigned char *gmemalloc(size_t sz)
+{
+	if(sz>gmemsize)
+	{
+		fprintf(stdout, "*** gmemalloc malloc %d\n", sz);
+		if(gmemptr) free(gmemptr);
+		gmemptr= (unsigned char *) malloc( sizeof(char) * sz + 1024 );
+		if(!gmemptr) 
+		{
+			fprintf(stderr, "\nERROR malloc %d", sz); 
+			gmemsize= 0;
+		}
+		else gmemsize= sz;
+	}
+	return gmemptr;
+}
 
 
 // 	 _________
@@ -87,7 +104,8 @@ CLI_options CLIops;
 
 // V4L_device class is based and takes code from
 // 		- Jay Rambhia (https://gist.github.com/jayrambhia/5866483)
-
+#define MAX_CAP_FOURCC	32
+#define MAX_V4L_FORMATS 32
 struct V4LDriverCameraInformation
 {
 	char driver[32];
@@ -98,15 +116,16 @@ struct V4LDriverCameraInformation
 	char bounds[16];
 	char defrect[16];
 	char pixelaspect[16];
-	char cap_fourcc_description[8][16];
-	char cap_fourcc[8][5];
+	char cap_fourcc_description[MAX_CAP_FOURCC][16];
+	char cap_fourcc[MAX_CAP_FOURCC][5];
 	int ncap;
 	struct 
 	{
 		bool yuyv;
 		bool mjpg;
+		bool jpeg;
 	} format;
-	int V4L_formats[16];
+	int V4L_formats[MAX_V4L_FORMATS];
 };
 
 class V4L_device
@@ -114,13 +133,15 @@ class V4L_device
 	public:
 		V4L_device(const char*);
 		~V4L_device(void);
-		int SetWorkingMode(CaptureResolution , bool );
+		int SetWorkingMode(CaptureResolution , char* );
 		void* AllocateBuffer(void);
 		int CaptureImage(void);	
 		void printinfo(void);
-		struct V4LDriverCameraInformation drvinfo;		
+		int GetDriverInfo(void);
+		struct V4LDriverCameraInformation drvinfo;			
 		void *ptr_capture_buffer;
 		size_t capture_length;
+		int dev; // copy of private camera
 		// Working mode
 		struct 
 		{
@@ -131,27 +152,23 @@ class V4L_device
 			unsigned int pixelformat;
 		} wkm;
 	private:
+		
+		int GetSupportedFormats(void);
 		int xioctl(int , void *);
-		int GetDriverInfo(void);	
 		int camera;	// file descriptor (open)
 		struct v4l2_buffer v4l_buf;		
 };
 
 V4L_device::V4L_device(const char *path)
 {
-	fprintf(stdout, "\nV4L_device create %s", path);
+//	fprintf(stdout, "\nV4L_device create %s", path);
 	ptr_capture_buffer= 0;
 	memset(&v4l_buf, 0, sizeof(struct v4l2_buffer));
-	camera = open(path, O_RDWR);
+	memset(&drvinfo, 0, sizeof(struct V4LDriverCameraInformation)); 
+	dev= camera = open(path, O_RDWR);
 	if (camera == -1)
 	{
 		perror("Opening video device");
-		exit(EXIT_FAILURE);
-	}
-	if (GetDriverInfo() == -1)
-	{
-		perror("Getting driver info");
-		exit(EXIT_FAILURE);
 	}
 }
 
@@ -174,7 +191,7 @@ int V4L_device::xioctl(int request, void *arg)
 // Get Camera information from DRIVER
 int V4L_device::GetDriverInfo(void)
 {
-	memset(&drvinfo, 0, sizeof(struct V4LDriverCameraInformation)); 
+//	memset(&drvinfo, 0, sizeof(struct V4LDriverCameraInformation)); 
 	// (1) VIDIOC_QUERYCAP
 	struct v4l2_capability caps = {};
 	if ( xioctl(VIDIOC_QUERYCAP, &caps) == -1 )
@@ -193,13 +210,14 @@ int V4L_device::GetDriverInfo(void)
 	cropcap.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	if (-1 == xioctl (VIDIOC_CROPCAP, &cropcap))
 	{
-		perror("\nQuerying Cropping Capabilities");
-		return -1;
+	//	perror("\nWARNING - Querying Cropping Capabilities");
+	//	return -1;
 	}
-	snprintf(drvinfo.bounds, sizeof(V4LDriverCameraInformation::bounds), "%dx%d+%d+%d", cropcap.bounds.width, cropcap.bounds.height, cropcap.bounds.left, cropcap.bounds.top);
-	snprintf(drvinfo.defrect, sizeof(V4LDriverCameraInformation::defrect), "%dx%d+%d+%d", cropcap.defrect.width, cropcap.defrect.height, cropcap.defrect.left, cropcap.defrect.top);
-	snprintf(drvinfo.pixelaspect, sizeof(V4LDriverCameraInformation::pixelaspect), "%d/%d", cropcap.pixelaspect.numerator, cropcap.pixelaspect.denominator);
-	
+	else {
+		snprintf(drvinfo.bounds, sizeof(V4LDriverCameraInformation::bounds), "%dx%d+%d+%d", cropcap.bounds.width, cropcap.bounds.height, cropcap.bounds.left, cropcap.bounds.top);
+		snprintf(drvinfo.defrect, sizeof(V4LDriverCameraInformation::defrect), "%dx%d+%d+%d", cropcap.defrect.width, cropcap.defrect.height, cropcap.defrect.left, cropcap.defrect.top);
+		snprintf(drvinfo.pixelaspect, sizeof(V4LDriverCameraInformation::pixelaspect), "%d/%d", cropcap.pixelaspect.numerator, cropcap.pixelaspect.denominator);
+	}
 	// (3) Camera capabilities - fourcc
 	// v4l2-ctl --list-formats
 	memset(&drvinfo.cap_fourcc, 0, sizeof(V4LDriverCameraInformation::cap_fourcc));
@@ -208,18 +226,32 @@ int V4L_device::GetDriverInfo(void)
 	fmtdesc.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	while (0 == xioctl(VIDIOC_ENUM_FMT, &fmtdesc))
 	{
+		//fprintf(stdout, "\n%i  %s", drvinfo.ncap, (char*)fmtdesc.description);
 		fmtdesc.index++;
 		strncpy(drvinfo.cap_fourcc_description[drvinfo.ncap], (char*)fmtdesc.description, sizeof(V4LDriverCameraInformation::cap_fourcc_description[0]));
 		snprintf(drvinfo.cap_fourcc[drvinfo.ncap],5, "%s", (char *)&fmtdesc.pixelformat);
 		drvinfo.ncap++;
+		if(drvinfo.ncap == MAX_CAP_FOURCC)
+		{
+			fprintf(stdout, "\nWARNING - truncated cap_fourcc");
+			break;
+		}
 	}
+	return 0;
+}
 
-	// (4) Camera capabilities
+
+// Get Camera information from DRIVER
+int V4L_device::GetSupportedFormats(void)
+{
+	fprintf(stdout, "\nTrying formats ...");
+	fflush (stdout);
+	// Camera capabilities
 	//	try one by one all formats
 	memset(&drvinfo.V4L_formats, 0, sizeof(V4LDriverCameraInformation::V4L_formats));
 	struct v4l2_format format = {0};
 	int j=0;
-	for(unsigned int i = 0; i < (sizeof(V4L_formats)/sizeof(unsigned int)); i++)
+	for(unsigned int i = 0; i < (sizeof(V4L_formats)/sizeof(int)); i++)
 	{
 		format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		format.fmt.pix.width = 320;
@@ -229,31 +261,32 @@ int V4L_device::GetDriverInfo(void)
 		if(	xioctl(VIDIOC_S_FMT, &format) != -1 
 			&& format.fmt.pix.pixelformat == V4L_formats[i])
 		{
+			//fprintf(stdout, "\nFormat %d %s", i, V4L_formats_str[i]);
 			drvinfo.V4L_formats[j++]= i+1;
 			switch(V4L_formats[i])
 			{
-				int i;
-				case V4L2_PIX_FMT_YUYV:
-					for(i=0; i<drvinfo.ncap && strcmp(drvinfo.cap_fourcc[i],"YUYV")!=0; i++);
-					drvinfo.format.yuyv= (i<drvinfo.ncap);
-					break;
-				case V4L2_PIX_FMT_MJPEG:
-					for(i=0; i<drvinfo.ncap && strcmp(drvinfo.cap_fourcc[i],"MJPG")!=0; i++);
-					drvinfo.format.mjpg= (i<drvinfo.ncap);				
-				break;
+				case V4L2_PIX_FMT_YUYV:		drvinfo.format.yuyv= true; break;
+				case V4L2_PIX_FMT_MJPEG:	drvinfo.format.mjpg= true; break;
+				case V4L2_PIX_FMT_JPEG:		drvinfo.format.jpeg= true; break;
 			}
 		}
-	}	
+	}
+	fprintf(stdout, " done");
 	return 0;
 }
 
-int V4L_device::SetWorkingMode(CaptureResolution res, bool yuyv_preferred)
+
+int V4L_device::SetWorkingMode(CaptureResolution res, char *preferred)
 {
+	GetSupportedFormats();
+	
 	struct v4l2_format format = {0};
-	// preferred mode is MJPEG
+	// DEFAULT mode is MJPEG
 	wkm.pixelformat= 0;
 	if(drvinfo.format.mjpg)	
 		wkm.pixelformat= V4L2_PIX_FMT_MJPEG;
+	else if(drvinfo.format.jpeg)	
+		wkm.pixelformat= V4L2_PIX_FMT_JPEG;
 	else if(drvinfo.format.yuyv)
 		wkm.pixelformat= V4L2_PIX_FMT_YUYV;
 	else {
@@ -262,7 +295,8 @@ int V4L_device::SetWorkingMode(CaptureResolution res, bool yuyv_preferred)
 		return -1;
 	}		
 	// overrule if CLI option
-	if(drvinfo.format.yuyv && yuyv_preferred) wkm.pixelformat= V4L2_PIX_FMT_YUYV;
+	if(drvinfo.format.yuyv && strcmp(preferred, "YUYV")==0) wkm.pixelformat= V4L2_PIX_FMT_YUYV;
+	if(drvinfo.format.mjpg && strcmp(preferred, "MJPG")==0) wkm.pixelformat= V4L2_PIX_FMT_MJPEG;
 	
 	format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	format.fmt.pix.width = res.width;
@@ -278,7 +312,7 @@ int V4L_device::SetWorkingMode(CaptureResolution res, bool yuyv_preferred)
 	wkm.width= format.fmt.pix.width;
 	wkm.height=  format.fmt.pix.height;
 	wkm.field=  format.fmt.pix.field;
-	return 0; 
+	return wkm.pixelformat; 
 }
 void* V4L_device::AllocateBuffer()
 {
@@ -345,6 +379,8 @@ int V4L_device::CaptureImage()
 
 void V4L_device::printinfo()
 {
+	GetDriverInfo();
+	GetSupportedFormats();
 	fprintf(stdout, "\nVIDIOC_QUERYCAP");
 	fprintf(stdout, "\n\tDriver:        \"%s\"", drvinfo.driver);
 	fprintf(stdout, "\n\tCard:          \"%s\"", drvinfo.card);
@@ -362,6 +398,7 @@ void V4L_device::printinfo()
 		fprintf(stdout, "\n\t%s: \t\t%s", drvinfo.cap_fourcc[i], drvinfo.cap_fourcc_description[i]);
 
 	fprintf(stdout, "\nFormat supported");
+	fprintf(stdout, "\n\tJPEG: \t\t%s", drvinfo.format.jpeg?"Yes":"No");
 	fprintf(stdout, "\n\tMJPG: \t\t%s", drvinfo.format.mjpg?"Yes":"No");
 	fprintf(stdout, "\n\tYUYV: \t\t%s", drvinfo.format.yuyv?"Yes":"No");
 	for(size_t i=0; drvinfo.V4L_formats[i]!=0 && i<sizeof(V4LDriverCameraInformation::V4L_formats)/sizeof(int); i++)			
@@ -389,33 +426,12 @@ struct ImageInfo
 	int height;
 	int pixel_size;
 };
-// Memory buffer to store the JPEG decompressed image
-// Keep a permanet buffer and resize as needed and 
-// avoid calling malloc and free for each image
-// called from: JPEG_decompress
-unsigned char *memptr;
-size_t memsize;
-unsigned char *gmemalloc(size_t sz)
-{
-	if(sz>memsize)
-	{
-		if(memptr) free(memptr);
-		memptr= (unsigned char *) malloc( sizeof(char) * sz + 1024 );
-		if(!memptr) 
-		{
-			fprintf(stderr, "\nERROR malloc %d", sz); 
-			memsize= 0;
-		}
-		else memsize= sz;
-	}
-	return memptr;
-}
 
 // Decompress JPEG into memory
 // takes the jpeg image from 'jpg_buffer' memory
-// output decompressed image into permanet buffer pointed by 'memptr' (=== local function pointer 'bmp_buffer)
+// output decompressed image into permanet buffer pointed by 'gmemptr' (=== local function pointer 'bmp_buffer)
 // returns:
-// 		decompressed RGB image in memory (memptr) 
+// 		decompressed RGB image in memory (gmemptr) 
 // 		Imgage info: width, height, and pixel size (bytes per pixel) -> image size in memory is= width x height x pixel_size
 // Original code for JPEG_decompress comes from (original comments are kept):
 //		- Kenneth Finnegan - A bare-bones example of how to use jpeglib to decompress a jpg in memory. (https://gist.github.com/PhirePhly/3080633)
@@ -468,7 +484,7 @@ int JPEG_decompress (ImageInfo *info, unsigned char *jpg_buffer, unsigned long j
 
 	// Calculate memory and resize buffer as needed
 	gmemalloc( (size_t) (width * height * pixel_size) );
-	if(!memptr) return -1;
+	if(!gmemptr) return -1;
 
 	// The row_stride is the total number of bytes it takes to store an
 	// entire scanline (row). 
@@ -489,7 +505,7 @@ int JPEG_decompress (ImageInfo *info, unsigned char *jpg_buffer, unsigned long j
 	// at the default high quality decompression setting is always 1.
 	while (cinfo.output_scanline < cinfo.output_height) {
 		unsigned char *buffer_array[1];
-		buffer_array[0] = memptr + \
+		buffer_array[0] = gmemptr + \
 						   (cinfo.output_scanline) * row_stride;
 
 		jpeg_read_scanlines(&cinfo, buffer_array, 1);
@@ -635,7 +651,7 @@ int display_imgageYUVY_2_fb(ImageInfo *info, char *raw_img_buffer, char *fbp, st
 //		Each Y goes to one of the pixels, and the Cb and Cr belong to both pixels.
 //	code based on: 
 //		http://stackoverflow.com/questions/17029136/weird-image-while-trying-to-compress-yuv-image-to-jpeg-using-libjpeg
-int compressYUYVtoJPEG(FILE *outfile, char *input, const int width, const int height) 
+int compressYUYVtoJPEG(char *input, const int width, const int height) 
 {
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
@@ -680,8 +696,13 @@ int compressYUYVtoJPEG(FILE *outfile, char *input, const int width, const int he
     jpeg_finish_compress(&cinfo);
 	// FINISH COMPRESS
 	//-------------------------------------
-    jpeg_destroy_compress(&cinfo);
-	fwrite(outbuffer,  sizeof(char), outlen, outfile);
+   
+	//fwrite(outbuffer,  sizeof(char), outlen, outfile);
+	gmemalloc( outlen );
+	if(gmemptr) memcpy(gmemptr, outbuffer, outlen);
+	
+	jpeg_destroy_compress(&cinfo);
+	free(outbuffer);
 	return (int) outlen;
 }
 
@@ -748,13 +769,109 @@ int compressYUYV_through_RGB_to_JPEG(FILE *outfile, const char *filename, char *
 
 //  _________
 // |         |   SECTION 4
-// |      *  |   MAIN LOOP 
-// |    * *  |   CLI
-// |   *  *  |   CAPTURE, AND DISPLAY, IMAGES AT THE DEFINED INTERVAL
+// |      *  |   CLOUD upload 
+// |    * *  |   
+// |   *  *  |   
 // |  *****  |
 // |      *  |
 // |_________|
 
+// memory for the POST message including HTTP header
+// keep a permanent buffer to minimize mallocs
+class POSTMessageMemory {
+		size_t overhead;
+	public:
+		size_t mem_sz; 
+		char *mem_ptr; 
+		size_t payload;
+		POSTMessageMemory ()
+		{
+//			printf("Constructed\n");
+			overhead= sizeof(char) * (1*1024);
+			mem_sz= 0; 
+			mem_ptr= 0; 
+		};
+		~POSTMessageMemory ()
+		{
+			printf("Destroyed\n");
+			if(mem_ptr) free(mem_ptr);
+		};
+		void size(size_t pl)
+		{
+			payload= pl;
+			if(mem_sz < (payload + overhead))
+			{
+				mem_sz= sizeof(char) * ( 2 * payload + overhead);
+				if(mem_ptr) free(mem_ptr);
+				mem_ptr= (char *) malloc(mem_sz);
+				printf("*** POSTMessageMemory malloc %d\n", mem_sz);
+			}
+		};
+};
+				
+/*
+void upload_image(POSTMessageMemory *postmem, char *filename, char* payload_ptr, double *elapsed, char *result)
+{
+	//char fullfilename[128];	
+	char *xmlcode_ptr;
+	char *memptr= postmem->mem_ptr; 
+	size_t mem_sz= postmem->mem_sz;
+	size_t payload_sz= postmem->payload;
+	if(memptr==0) return;
+	size_t nbytes;
+	size_t pos;
+	
+	// image file
+	memptr[0]='\0';
+	//snprintf(fullfilename, sizeof(fullfilename),"%s%s", IMAGE_SAVED_FILES, filename);
+	nbytes= hhtpPOST_header(filename, memptr, mem_sz, &pos, payload_sz);
+	//file_getcontent(fullfilename, &memptr[pos], payload_sz);
+	memcpy(&memptr[pos], payload_ptr, payload_sz);
+	result[0]='\0';
+	if(hhtpPOST_upload(memptr, nbytes, elapsed, &xmlcode_ptr) <0 )
+	{
+		strcpy(result, "CONNECTION ERROR");
+		return;
+	}
+	
+	pos = xmlcode_ptr? string(xmlcode_ptr).find("<result>") : string::npos;
+	if(pos != string::npos) 
+		sscanf(&xmlcode_ptr[pos], "%*[^>]>%[^</]</", result); // read and ignore characters other than a '>'
+	
+	// manifest file
+	/ *
+	size_t l= (size_t) strlen(filename);
+	memptr[0]='\0';
+	nbytes= hhtpPOST_header("data.txt", memptr, mem_sz, &pos, l);
+	memcpy(&memptr[pos], filename, l);
+	hhtpPOST_upload(memptr, nbytes, 0, 0);	
+* /	
+}
+*/
+
+//  _________
+// |         |   SECTION 5
+// |  ****   |   MAIN LOOP 
+// |  *      |   CLI
+// |  ****   |   CAPTURE, AND DISPLAY, IMAGES AT THE DEFINED INTERVAL
+// |      *  |
+// |   ***   |
+// |_________|
+
+enum VGAResolution {hd, qvga, vga, svga};
+typedef struct
+{
+	VGAResolution res= vga;
+	bool verbose= true; 
+	bool agent= false;
+	bool yuyv= false;
+	bool display= false;
+	bool cloud= false;
+	int time;
+	char V4L_format[5];
+} CLI_options;
+
+CLI_options CLIops;
 
 static void usage(void)
 {
@@ -765,11 +882,18 @@ static void usage(void)
 		"commands are:\n"
 		"   --info    - shows camera information\n"	
 		"Options are:\n"
-		"   vga       - set VGA capture (640x480). Default is QVGA (320x240)\n"
-		"   yuyv      - works in yuyv format instead of MJPEG\n"
+		"   videoX    - select camera driver /dev/videoX. Default is video0\n"
+		"   qvga      - set QVGA capture(320x240)\n"
+		"   vga       - set VGA capture (640x480) (default)\n"
+		"   svga      - set Super-VGA capture (800x600)\n"
+		"   hd        - set high definition capture (1080x720)\n"
+		"   jpeg      - requests the camera to capture JPEG encoded images\n"
+		"   mjpg      - requests the camera to capture MJPG encoded images (default)\n"
+		"   yuyv      - requests the camera to capture YUYV encoded images\n"
 		"   display   - output captured image into the framebuffer (HDMI output)\n"
 		"   noverbose - stop console output\n"
 		"   agent     - runs silently: set noverbose and disable kbhit\n"
+		"   cloud     - upload image to cloud host instead of local camera storage (default is local)\n"
 		"\nexample:\n"
 		"   tlcam 100\n"
 		"   tlcam 100 yuyv vga\n"
@@ -781,9 +905,12 @@ int main(int argc, char *argv[])
 {
 	string command;
 	bool is_cli= false;
+	POSTMessageMemory postmem;
+	string video= "video0";
+	
 	// memory
-	memptr= 0;
-	memsize= 0;	
+	gmemptr= 0;
+	gmemsize= 0;	
 	char str[128]; // general usage
 	fprintf(stdout,"Time Lapse Camera version %s", version(str, sizeof(str)));
 	if(argc<=1)
@@ -823,26 +950,55 @@ int main(int argc, char *argv[])
 				size_t j=0;
 				for(; j<sizeof(str)-1 && j<strlen(argv[i]); j++) str[j]= tolower(argv[i][j]);
 				str[j]='\0';
-				if(strcmp(str, "vga") ==0) CLIops.vga= true;
+				if(  strncmp(str, "video",  strlen("video")) == 0)
+				{
+					video= str;
+				}
+				else if(strcmp(str, "hd") ==0) CLIops.res= hd;
+				else if(strcmp(str, "qvga") ==0) CLIops.res= vga;
+				else if(strcmp(str, "vga") ==0) CLIops.res= vga;
+				else if(strcmp(str, "svga")==0) CLIops.res= svga;
 				else if(strcmp(str, "noverbose")==0) CLIops.verbose= false;
 				else if(strcmp(str, "agent")==0) CLIops.agent= true;
-				else if(strcmp(str, "yuyv")==0 || strcmp(str, "yuv")==0) CLIops.yuyv= true;
+				else if(strcmp(str, "yuyv")==0 || strcmp(str, "yuv")==0) { CLIops.yuyv= true; strcpy(CLIops.V4L_format, "YUYV");}
+				else if(strcmp(str, "jpeg")==0) { strcpy(CLIops.V4L_format, "JPEG");}
+				else if(strcmp(str, "mjpg")==0 || strcmp(str, "mjpeg")==0) { strcpy(CLIops.V4L_format, "MJPG");}
 				else if(strcmp(str, "display")==0) CLIops.display= true;				
+				else if(strcmp(str, "cloud")==0) CLIops.cloud= true;				
 			}
 		}
 	}
 
 	CLIops.time= n_numbers>=1? numbers[0]: 100; // miliseconds 
 	if(CLIops.agent) CLIops.verbose= false;
-	CapResolution = (CaptureResolution *) (CLIops.vga? &vga : &qvga);
-
+	
+	// Resolution
+	CaptureResolution res;
+	const char *restxt;
+	switch (CLIops.res)
+	{
+		case qvga: res= (CaptureResolution) { 340, 240}; restxt= "QVGA 320x240 (default)";break;
+		case  vga: res= (CaptureResolution) { 640, 480}; restxt= "VGA 640x480"; break;
+		case svga: res= (CaptureResolution) { 800, 600}; restxt= "SVGA 800x600"; break;
+		case   hd: res= (CaptureResolution) {1080, 720}; restxt= "HD 1080x720"; break;
+		default:   res= (CaptureResolution) { 640, 480}; restxt= "unknown - VGA 640x480";
+	}
+	
 	// (1) Create V4L object for Camera 1
-	V4L_device v4lcam(CAMERA_1); 
+	string video_dev= "/dev/" + video;
+	V4L_device v4lcam(video_dev.c_str()); 
+	if(v4lcam.dev == -1)
+	{
+		fprintf(stdout, "\nERROR: Failure creating device");
+		exit(EXIT_FAILURE);
+	}
 	
 	if(is_cli)
 	{
 		if( command == "info")
+		{
 			v4lcam.printinfo(); 
+		}
 		else
 			fprintf(stdout, "\nUnknown command %s\n", command.c_str());
 	}
@@ -881,9 +1037,16 @@ int main(int argc, char *argv[])
 			}	
 		}
 		
+		// Show camera information
+		v4lcam.GetDriverInfo();
+		fprintf(stdout, "\nCamera information (%s)", ("/dev/" + video).c_str());
+		fprintf(stdout, "\n\tDriver:        \"%s\"", v4lcam.drvinfo.driver);
+		fprintf(stdout, "\n\tCard:          \"%s\"", v4lcam.drvinfo.card);
+		fprintf(stdout, "\n\tBus:           \"%s\"", v4lcam.drvinfo.bus_info);		
+		
 		// (3) V4L set working mode	
-		CaptureResolution res = (CLIops.vga? (CaptureResolution) {640, 480}: (CaptureResolution){340, 240});
-		if(v4lcam.SetWorkingMode(res, CLIops.yuyv) !=0)
+		int wkmf;
+		if((wkmf=v4lcam.SetWorkingMode(res, CLIops.V4L_format)) < 0)
 		{
 			fprintf(stdout, "\nERROR: SetWorkingMode");
 			fflush(stdout);
@@ -894,16 +1057,23 @@ int main(int argc, char *argv[])
 		if(v4lcam.AllocateBuffer() ==  (void *) -1) exit(EXIT_FAILURE);
 		
 		// Show working mode	
-		fprintf(stdout, "\n\nWorking mode:");	
+		fprintf(stdout, "\nWorking mode:");	
 		fprintf(stdout, "\n\tCapture period=%d ms", CLIops.time);	
-		fprintf(stdout, "\n\tFormat= %s", CLIops.yuyv?"YUYV":"MPEJ");	
-		fprintf(stdout, "\n\tResolution %s", CLIops.vga?"VGA 640x480":"QVGA 320x240 (default)");
+		int index= -1;
+		size_t i=0;
+		for(; i<sizeof(V4L_formats)/sizeof(int) && wkmf!= (int)V4L_formats[i] ; i++);
+		if(i<sizeof(V4L_formats)/sizeof(int)) index= (int) i;
+		fprintf(stdout, "\n\tFormat= %s", (index>=0) ? V4L_formats_str[index] : "Unknown");
+		//fprintf(stdout, "\n\tFormat= %s", CLIops.yuyv?"YUYV":"MPEJ");	
+		fprintf(stdout, "\n\tResolution %s", restxt); //CLIops.vga?"VGA 640x480":"QVGA 320x240 (default)");
 		fprintf(stdout, "\n\n");
 		
 		// (5) CAPTURE LOOP
 		unsigned int n=0;
 		ImageInfo info;
-		FILE *outfile;
+		
+		
+		hhtpPOST_init(HOST_NAME, HOST_URL, HOST_PORT);
 		
 		if(!CLIops.agent) termios_init();
 		for(;;)
@@ -916,20 +1086,17 @@ int main(int argc, char *argv[])
 			char fullfilename[128];	
 			snprintf(filename, sizeof(filename),"image_%03d.jpg", n);
 			snprintf(fullfilename, sizeof(fullfilename),"%s%s", IMAGE_STORAGE_PATH, filename);	
-	
-			// SAVE FILE
-			if ((outfile = fopen(fullfilename, "wb")) == NULL) 
-			{
-				fprintf(stderr, "can't open %s\n", fullfilename);
-				break;
-			}
-			size_t filelength=0;
+
+			unsigned char *jpeg_ptr= 0;
+			size_t jpeg_sz=0;
+			// YUYV
 			if(v4lcam.wkm.pixelformat == V4L2_PIX_FMT_YUYV)
 			{
-				// Compress to JPEG and write to FILE
-		//		filelength += compressYUYV_through_RGB_to_JPEG(outfile, fullfilename, ptr_capture_buffer, CapResolution->width, CapResolution->height);
-				filelength += compressYUYVtoJPEG(outfile, (char*)v4lcam.ptr_capture_buffer, v4lcam.wkm.width, v4lcam.wkm.height);
-				// display CLI's option
+				// Compress to JPEG
+		//		jpeg_sz += compressYUYV_through_RGB_to_JPEG(outfile, fullfilename, ptr_capture_buffer, CapResolution->width, CapResolution->height);
+				jpeg_sz= compressYUYVtoJPEG((char*)v4lcam.ptr_capture_buffer, v4lcam.wkm.width, v4lcam.wkm.height);
+				// Outcome is in gmemptr (pointer to jpeg compressed image)
+				jpeg_ptr= gmemptr;
 				if(CLIops.display)
 				{
 					info.width= v4lcam.wkm.width;
@@ -937,29 +1104,84 @@ int main(int argc, char *argv[])
 					display_imgageYUVY_2_fb(&info, (char *)v4lcam.ptr_capture_buffer, fbp, &vinfo, 0, 0);
 				}
 			}
-			else if(v4lcam.wkm.pixelformat == V4L2_PIX_FMT_MJPEG)
+			// JPEG
+			else if(v4lcam.wkm.pixelformat == V4L2_PIX_FMT_MJPEG || v4lcam.wkm.pixelformat == V4L2_PIX_FMT_JPEG)
 			{
-				// Write JPEG image to FILE
-				filelength +=  fwrite((char*)v4lcam.ptr_capture_buffer,  sizeof(char), v4lcam.capture_length, outfile);
-				// display CLI's option
+				jpeg_ptr= (unsigned char*)v4lcam.ptr_capture_buffer;
+				jpeg_sz= v4lcam.capture_length;
 				if(CLIops.display)
 				{
-					JPEG_decompress(&info, (unsigned char *)v4lcam.ptr_capture_buffer, (unsigned long) v4lcam.capture_length); 
-					display_imageRGB_2_fb(&info, memptr, fbp, &vinfo, 0, 0); 
+					JPEG_decompress(&info, jpeg_ptr, jpeg_sz); 
+					display_imageRGB_2_fb(&info, gmemptr, fbp, &vinfo, 0, 0); 
 				}
 			}
-			fclose(outfile);	
-	
-			// Write metadata file containing the name of the JPEG just stored
-			FILE *fp = fopen(fulldatafilename, "w");
-			if (fp != NULL) {
-				fwrite(filename,  sizeof(char), strlen(filename), fp);
-				fclose(fp);
-			}	
+			
+			if(jpeg_ptr){
+				// Upload JPEG file into the cloud
+				if(CLIops.cloud)
+				{
+					double elapsed=0;
+					char result[128];
+					result[0]='\0';
+					// allocate memory
+					postmem.size((size_t) jpeg_sz);
+					if(postmem.mem_ptr)
+					{
+					// image file upload
+//					upload_image(&postmem, filename, (char*)jpeg_ptr, &elapsed, result);
+									
+						char *xmlcode_ptr;
+						char *memptr= postmem.mem_ptr; 
+						size_t mem_sz= postmem.mem_sz;
+						size_t payload_sz= postmem.payload;
+						size_t pos;
+						
+						size_t nbytes= hhtpPOST_header(filename, memptr, mem_sz, &pos, payload_sz);
+						memcpy(&memptr[pos], jpeg_ptr, payload_sz);
+						result[0]='\0';
+						if(hhtpPOST_upload(memptr, nbytes, &elapsed, &xmlcode_ptr) <0 )
+						{
+							strcpy(result, "CONNECTION ERROR");
+						}
+						else
+						{
+						
+						pos = xmlcode_ptr? string(xmlcode_ptr).find("<result>") : string::npos;
+						if(pos != string::npos) 
+							sscanf(&xmlcode_ptr[pos], "%*[^>]>%[^</]</", result); // read and ignore characters other than a '>'
+						}
+					}				
+					
+		
+					
+					
+					if(CLIops.verbose) 
+					{
+						double temperature= CPUtemperature();
+						if(CLIops.verbose) printf("T=%6.2fC %s %.2f ms %s\n", temperature, filename, elapsed/1000, result);
+					}				
+				}
+				// Store JPEG image locally
+				else
+				{
+					FILE *fp;
+					// (1) JPEG file
+					if ( (fp = fopen(fullfilename, "wb")) != NULL) 
+					{					
+						fwrite(jpeg_ptr,  sizeof(char), jpeg_sz, fp);
+						fclose(fp);
+					}
+					// (2) Write metadata file containing the name of the JPEG just stored
+					if ( (fp = fopen(fulldatafilename, "w"))!= NULL ) {
+						fwrite(filename,  sizeof(char), strlen(filename), fp);
+						fclose(fp);
+					}	
 
-			if(CLIops.verbose) {
-				double temperature= CPUtemperature();
-				if(CLIops.verbose) printf("T=%6.2fC %s\r", temperature, filename);
+					if(CLIops.verbose) {
+						double temperature= CPUtemperature();
+						if(CLIops.verbose) printf("T=%6.2fC %s\r", temperature, filename);
+					}
+				}
 			}
 			
 			// Wait
@@ -986,7 +1208,7 @@ int main(int argc, char *argv[])
 	
 	// Terminate
 	v4lcam.~V4L_device();
-	if(memptr) free(memptr);
+	if(gmemptr) free(gmemptr);
 	exit(EXIT_SUCCESS);
 }
 
