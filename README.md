@@ -24,7 +24,7 @@ SW is not limited to one single camera although it has not been tested and would
 ## REQUISITES
 You need to create a directory to store the capture files. It is recommended you create a RAM disk for better performance.
 
-In case you need guidance about how to create the RAM disk check instructions at www.iambobot.com
+In case you need guidance about how to create the RAM disk check instructions at [www.iambobot.com](https://www.iambobot.com/en/articles/article_wilson_010_camera.php)
 
 Change the #define IMAGE_STORAGE_PATH in the .h file to point to your storage.
 
@@ -56,7 +56,7 @@ Options are:
    qvga      - set QVGA capture(320x240)
    vga       - set VGA capture (640x480) (default)
    svga      - set Super-VGA capture (800x600)
-   hd        - set high definition capture (1080x720)
+   hd        - set high definition capture (1280x720)
    jpeg      - requests the camera to capture JPEG encoded images
    mjpg      - requests the camera to capture MJPG encoded images (default)
    yuyv      - requests the camera to capture YUYV encoded images
@@ -72,7 +72,7 @@ example:
 ```
 
 ## LIMITATIONS
-Resolutions currently supported are HD (1080 x 720), SVGA (800 x 600), VGA (640 x 480) and QVGA (340 x 240).
+Resolutions currently supported are HD (1280 x 720), SVGA (800 x 600), VGA (640 x 480) and QVGA (340 x 240).
 
 YUV option needs some debugging.
 
