@@ -1,6 +1,6 @@
-# Time-Lapse Camera
+# Time Lapse Camera
 
-Time-Lapse Camera (TLCAM) is part of the Wilson project (www.iambobot.com)
+Time Lapse Camera (TLCAM) is part of the Wilson project (www.iambobot.com)
 
 ## DESCRIPTION
 
